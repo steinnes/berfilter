@@ -16,7 +16,6 @@
 static int format = 0;
 static unsigned int depth = 0;
 static int tagpath[128];
-static int record_size = 0;
 
 char *filename;
 char *prefix;
@@ -293,7 +292,7 @@ void dump_tlv_info(TLV *tlv)
 {
 	printf("TLV:	%d\n \
 length: %d	nbytes: %d\n \
-childs: %d	depth:  %d", tlv->tag.id, tlv->length.length, tlv->nbytes, tlv->children.size(), tlv->depth);
+childs: %d	depth:  %d", tlv->tag.id, tlv->length.length, tlv->nbytes, (int)tlv->children.size(), tlv->depth);
 }
 
 void print_value(TLV *tlv)
@@ -311,14 +310,15 @@ char *field_to_hex(TLV *tlv, int len)
 	memset(hex_string, 0, sizeof(char)*len*2);
 	char hex_seat[2];
 	unsigned int i;
-	unsigned short num, swapped;
-	if (tlv->value)
+	unsigned short num;
+	if (tlv->value != NULL)
 	{
 		if (tlv->length.length == 8)
 		{
 			for (i = 0; i < 8; i++)
 			{
 				// swap nibbles
+				printf("Got to byte %d\n", i);
 				num = (unsigned short)(tlv->value[i]);
 				sprintf(hex_seat, "%02x", ((num>>4)&0x0f) | ((num<<4)&0xf0));
 				strncat(hex_string, hex_seat, 2);
@@ -350,22 +350,19 @@ void build_skip_ranges(TLV *tlv, FILE *fp)
 
 	for (i = 0; i < tlv->children.size(); i++)
 	{
+		printf("A\n");
 		p = (int *)grep_records;
 		child = tlv->children[i];
-		//dump_tlv_info(child);
+		dump_tlv_info(child);
 		if (int_in_list(child->tag.id, p, 5))
 		{
 			printf("%s: Child %d contains the greppable field!\n", filename, child->tag.id);
 			field_of_interest = tlv_by_id(child, 1);
 			if (field_of_interest != NULL)
 			{
-				printf("\t value=");
-				print_value(field_of_interest);
-				printf("...");
-
 				field_value = field_to_hex(field_of_interest, 8); // our field is 8 bytes
 				if (!strncmp(field_value, prefix, min(strlen(field_value), strlen(prefix))))
-					printf("MATCH!\n");
+					printf("AND A MATCH: %s!\n", field_value);
 				free(field_value);
 			}
 		}
@@ -415,7 +412,7 @@ static void usage(void)
 
 int main(int argc, char *argv[])
 {
-	int c, i;
+	int c;
 
 	while ((c = getopt(argc, argv, "p:h?")) != -1)
 	{
@@ -443,14 +440,14 @@ int main(int argc, char *argv[])
 		return 0;
 	}
 
-	FILE *fp = fopen(argv[1], "r");
+	FILE *fp = fopen(argv[0], "r");
 
 	if (fp == NULL)
 	{
-		fprintf(stderr, "error opening %s: %s\n", argv[i], strerror(errno));
+		fprintf(stderr, "error opening %s: %s\n", argv[0], strerror(errno));
 		return 0;
 	}
-	filename = argv[i];
+	filename = argv[0];
 	dump(fp);
 	fclose(fp);
 }
