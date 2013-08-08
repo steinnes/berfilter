@@ -1,6 +1,6 @@
 
 CC=g++
-CFLAGS=-Wall
+CFLAGS=-Wall -ggdb3
 
 all: berfilter
 

@@ -448,7 +448,7 @@ int main(int argc, char *argv[])
 	if (fp == NULL)
 	{
 		fprintf(stderr, "error opening %s: %s\n", argv[i], strerror(errno));
-		continue;
+		return 0;
 	}
 	filename = argv[i];
 	dump(fp);
