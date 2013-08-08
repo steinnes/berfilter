@@ -19,6 +19,7 @@ static int tagpath[128];
 static int record_size = 0;
 
 char *filename;
+char *prefix;
 
 enum
 {
@@ -304,12 +305,42 @@ void print_value(TLV *tlv)
 	}
 }
 
+char *field_to_hex(TLV *tlv, int len)
+{
+	char hex_string[len*2];
+	memset(hex_string, 0, sizeof(char)*len*2);
+	char hex_seat[2];
+	unsigned int i;
+	unsigned short num, swapped;
+	if (tlv->value)
+	{
+		if (tlv->length.length == 8)
+		{
+			for (i = 0; i < 8; i++)
+			{
+				// swap nibbles
+				num = (unsigned short)(tlv->value[i]);
+				sprintf(hex_seat, "%02x", ((num>>4)&0x0f) | ((num<<4)&0xf0));
+				strncat(hex_string, hex_seat, 2);
+			}
+			return strdup(hex_string);
+		}
+	}
+	return NULL;
+}
+
+int min(int a, int b)
+{
+	return a < b ? a : b;
+}
+
 void build_skip_ranges(TLV *tlv, FILE *fp)
 {
 	unsigned int i;
 	int *p;
 	TLV *child;
 	TLV *field_of_interest;
+	char *field_value;
 	int grep_records[] = 	{0,    // moCallRecord
 				 1,    // mtCallRecord
 				 6,    // moSMSRecord
@@ -330,7 +361,12 @@ void build_skip_ranges(TLV *tlv, FILE *fp)
 			{
 				printf("\t value=");
 				print_value(field_of_interest);
-				printf("\n");
+				printf("...");
+
+				field_value = field_to_hex(field_of_interest, 8); // our field is 8 bytes
+				if (!strncmp(field_value, prefix, min(strlen(field_value), strlen(prefix))))
+					printf("MATCH!\n");
+				free(field_value);
 			}
 		}
 	}
@@ -372,36 +408,22 @@ void dump(FILE *fp)
 
 static void usage(void)
 {
-	fprintf(stderr, "usage: berdump [options] <files>\n");
+	fprintf(stderr, "usage: berdump -p <prefix> <file>\n");
 	fprintf(stderr, "options:\n");
-	fprintf(stderr, "  -f <N> : output format\n");
-	fprintf(stderr, "output formats:\n");
-	fprintf(stderr, "  -f0	  : Pretty tree structure\n");
-	fprintf(stderr, "  -f1	  : CSV tag|value\n");
-	fprintf(stderr, "  -f2	  : CSV tag|value with full tag path\n");
+	fprintf(stderr, "  -p <prefix> - prefix in hex to match the filter-field\n");
 }
 
 int main(int argc, char *argv[])
 {
 	int c, i;
 
-	while ((c = getopt(argc, argv, "f:h?")) != -1)
+	while ((c = getopt(argc, argv, "p:h?")) != -1)
 	{
 		switch (c)
 		{
-			case 'f':
-				format = atoi(optarg);
+			case 'p':
+				prefix = optarg;
 				break;
-			case '?':
-				if (optopt == 'c')
-					fprintf (stderr, "Option -%c requires an argument.\n", optopt);
-				else if (isprint (optopt))
-					fprintf (stderr, "Unknown option `-%c'.\n", optopt);
-				else
-					fprintf (stderr,
-							"Unknown option character `\\x%x'.\n",
-							optopt);
-				return 1;
 			case 'h':
 			default:
 				usage();
@@ -414,30 +436,22 @@ int main(int argc, char *argv[])
 
 	if (argc < 1)
 	{
-		dump(stdin);
+		if (ftell(stdin) != -1)
+			dump(stdin);
+		else
+			usage();
 		return 0;
 	}
 
-	for (i = 0; i < argc; i++)
+	FILE *fp = fopen(argv[1], "r");
+
+	if (fp == NULL)
 	{
-		if (strlen(argv[i]) == 1 && argv[i][0] == '-')
-		{
-			dump(stdin);
-			continue;
-		}
-
-		FILE *fp = fopen(argv[i], "r");
-
-		if (fp == NULL)
-		{
-			fprintf(stderr, "error opening %s: %s\n", argv[i], strerror(errno));
-			continue;
-		}
-		filename = argv[i];
-
-		dump(fp);
-
-		fclose(fp);
+		fprintf(stderr, "error opening %s: %s\n", argv[i], strerror(errno));
+		continue;
 	}
+	filename = argv[i];
+	dump(fp);
+	fclose(fp);
 }
 
