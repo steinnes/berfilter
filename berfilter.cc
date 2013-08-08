@@ -268,13 +268,21 @@ TLV* tlv_by_id(TLV *tlv, int id)
 	return NULL;
 }
 
-struct skip_range
+struct range
 {
 	int start;
 	int end;
 };
 
-std::vector<struct skip_range> skip_ranges;
+struct range *new_range(int start, int end)
+{
+	struct range *s = (struct range *)malloc(sizeof(struct range));
+	s->start = start;
+	s->end = end;
+	return s;
+}
+
+std::vector<struct range *> skip_ranges;
 
 bool int_in_list(int needle, int *haystack, int list_len)
 {
@@ -290,17 +298,20 @@ bool int_in_list(int needle, int *haystack, int list_len)
 
 void dump_tlv_info(TLV *tlv)
 {
-	printf("TLV:	%d\n \
-length: %d	nbytes: %d\n \
-childs: %d	depth:  %d", tlv->tag.id, tlv->length.length, tlv->nbytes, (int)tlv->children.size(), tlv->depth);
+	fprintf(stderr,"TLV:	%d\nlength: %d	nbytes: %d\nchilds: %d	depth:  %d\n",
+		tlv->tag.id,
+		tlv->length.length,
+		tlv->nbytes,
+		(int)tlv->children.size(),
+		tlv->depth);
 }
 
-void print_value(TLV *tlv)
+void error_print_value(TLV *tlv)
 {
 	unsigned int i;
-	for (i = 0; i < tlv->length.length; i++)
+	for (i = 0; i < tlv->length.length-1; i++)
 	{
-		printf("%02x", tlv->value[i]);
+		fprintf(stderr, "%02x", tlv->value[i]);
 	}
 }
 
@@ -318,7 +329,6 @@ char *field_to_hex(TLV *tlv, int len)
 			for (i = 0; i < 8; i++)
 			{
 				// swap nibbles
-				printf("Got to byte %d\n", i);
 				num = (unsigned short)(tlv->value[i]);
 				sprintf(hex_seat, "%02x", ((num>>4)&0x0f) | ((num<<4)&0xf0));
 				strncat(hex_string, hex_seat, 2);
@@ -341,19 +351,17 @@ void build_skip_ranges(TLV *tlv, FILE *fp)
 	TLV *child;
 	TLV *field_of_interest;
 	char *field_value;
-	int grep_records[] = 	{0,    // moCallRecord
+	int filter_records[] = 	{0,    // moCallRecord
 				 1,    // mtCallRecord
 				 6,    // moSMSRecord
 				 7,    // mtSMSRecord
 				 100}; // forwardCallRecord
-	//dump_tlv_info(tlv);
+	dump_tlv_info(tlv);
 
 	for (i = 0; i < tlv->children.size(); i++)
 	{
-		printf("A\n");
-		p = (int *)grep_records;
+		p = (int *)filter_records;
 		child = tlv->children[i];
-		dump_tlv_info(child);
 		if (int_in_list(child->tag.id, p, 5))
 		{
 			printf("%s: Child %d contains the greppable field!\n", filename, child->tag.id);
@@ -361,12 +369,38 @@ void build_skip_ranges(TLV *tlv, FILE *fp)
 			if (field_of_interest != NULL)
 			{
 				field_value = field_to_hex(field_of_interest, 8); // our field is 8 bytes
+				if (field_value == NULL)
+				{
+					fprintf(stderr, "\n*******************\n");
+					fprintf(stderr, "Failed to extract 8 bytes from field:");
+					dump_tlv_info(field_of_interest);
+					fprintf(stderr, "raw (unswapped nibble) hex data:");
+					error_print_value(field_of_interest);
+					fprintf(stderr, "\n*******************\n\n");
+					continue;
+				}
 				if (!strncmp(field_value, prefix, min(strlen(field_value), strlen(prefix))))
-					printf("AND A MATCH: %s!\n", field_value);
+				{
+					skip_ranges.push_back(
+						new_range(
+							child->file_offset_bytes,
+							child->file_offset_bytes+child->nbytes
+						));
+					tlv->length.length -= child->length.length;
+					tlv->nbytes -= child->nbytes;
+					printf("AND A MATCH: %s! (record size: %d)\n", field_value, child->nbytes);
+				}
 				free(field_value);
 			}
 		}
+		else
+		{
+			// drop this record!
+			
+		}
 	}
+	printf("Done...\n");
+	dump_tlv_info(tlv);
 }
 
 void dump(FILE *fp)
