@@ -2,19 +2,19 @@
 CC=g++
 CFLAGS=-Wall
 
-all: berdump
+all: berfilter
 
-OBJS += berdump.o
+OBJS += berfilter.o
 
-berdump: $(OBJS)
-	$(CC) $(OBJS) -o berdump
+berfilter: $(OBJS)
+	$(CC) $(OBJS) -o berfilter
 
-test: berdump
+test: berfilter
 	@sh runtest.sh
 
 .cc.o:
 	$(CC) $(CFLAGS) -c $*.cc
 
 clean:
-	rm -f berdump *.o
+	rm -f berfilter *.o
 

@@ -1,0 +1,4 @@
+Hacking together a little ASN.1 filter, which uses the same ASN.1 TLV
+parser as the parent project berdump. Needed to do some data filtering
+without changing the initial format, so I hacked this piece of crap
+together.

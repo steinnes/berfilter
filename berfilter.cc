@@ -16,6 +16,9 @@
 static int format = 0;
 static unsigned int depth = 0;
 static int tagpath[128];
+static int record_size = 0;
+
+char *filename;
 
 enum
 {
@@ -46,8 +49,10 @@ struct TLV
 	struct tag tag;
 	struct length length;
 	unsigned int nbytes;
+	long file_offset_bytes;
 	unsigned int depth;
 	unsigned char *value;
+	TLV *parent;
 	std::vector<struct TLV *> children;
 };
 
@@ -132,8 +137,13 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 {
 	int n = 0;
 	int i;
+	long file_offset;
 
 	memset(tlv, 0, sizeof(struct TLV));
+	file_offset = ftell(fp);
+	if (file_offset == -1)
+		printf("ftell encountered error: %s\n", strerror(errno));
+	tlv->file_offset_bytes = file_offset;
 
 	if (readTag(fp, &tlv->tag))
 		return 1;
@@ -242,113 +252,102 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 	return 0;
 }
 
-void print(struct TLV *tlv)
+TLV* tlv_by_id(TLV *tlv, int id)
 {
 	unsigned int i;
-
-	for (i = 0; i < tlv->depth; i++)
-		printf("  ");
-
-	if (tlv->value)
+	if (tlv->tag.id == id)
 	{
-		printf("[%d] ", tlv->tag.id);
-
-		for (i = 0; i < tlv->length.length; i++)
-		{
-			printf("%02x", tlv->value[i]);
-		}
-
-		printf("\n");
-
-	} else
+		return tlv;
+	}
+	for (i = 0; i < tlv->children.size(); i++)
 	{
-		printf("[%d] {\n", tlv->tag.id);
+		if (tlv->children[i]->tag.id == id)
+			return tlv->children[i];
+	}
 
-		for (i = 0; i < tlv->children.size(); i++)
-			print(tlv->children[i]);
+	return NULL;
+}
 
-		for (i = 0; i < tlv->depth; i++)
-			printf("  ");
+struct skip_range
+{
+	int start;
+	int end;
+};
 
-		printf("}\n");
+std::vector<struct skip_range> skip_ranges;
+
+bool int_in_list(int needle, int *haystack, int list_len)
+{
+	while (list_len > 0)
+	{
+		if (needle == *haystack)
+			return true;
+		haystack++;
+		list_len--;
+	}
+	return false;
+}
+
+void dump_tlv_info(TLV *tlv)
+{
+	printf("TLV:	%d\n \
+length: %d	nbytes: %d\n \
+childs: %d	depth:  %d", tlv->tag.id, tlv->length.length, tlv->nbytes, tlv->children.size(), tlv->depth);
+}
+
+void print_value(TLV *tlv)
+{
+	unsigned int i;
+	for (i = 0; i < tlv->length.length; i++)
+	{
+		printf("%02x", tlv->value[i]);
 	}
 }
 
-void printCSV(struct TLV *tlv, int printPath)
+void build_skip_ranges(TLV *tlv, FILE *fp)
 {
 	unsigned int i;
+	int *p;
+	TLV *child;
+	TLV *field_of_interest;
+	int grep_records[] = 	{0,    // moCallRecord
+				 1,    // mtCallRecord
+				 6,    // moSMSRecord
+				 7,    // mtSMSRecord
+				 100}; // forwardCallRecord
+	//dump_tlv_info(tlv);
 
-	if (tlv->tag.isPrimitive)
+	for (i = 0; i < tlv->children.size(); i++)
 	{
-		tagpath[tlv->depth] = tlv->tag.id;
-
-		if (printPath)
+		p = (int *)grep_records;
+		child = tlv->children[i];
+		//dump_tlv_info(child);
+		if (int_in_list(child->tag.id, p, 5))
 		{
-			for (i = 0; i <= tlv->depth; i++)
+			printf("%s: Child %d contains the greppable field!\n", filename, child->tag.id);
+			field_of_interest = tlv_by_id(child, 1);
+			if (field_of_interest != NULL)
 			{
-				if (i == 0)
-					printf("%d", tagpath[i]);
-				else
-					printf(",%d", tagpath[i]);
+				printf("\t value=");
+				print_value(field_of_interest);
+				printf("\n");
 			}
-		} else
-		{
-			printf("%d", tlv->tag.id);
 		}
-
-		printf("|");
-
-		for (i = 0; i < tlv->length.length; i++)
-		{
-			printf("%02x", tlv->value[i]);
-		}
-
-		printf("\n");
-
-	} else
-	{
-		tagpath[tlv->depth] = tlv->tag.id;
-
-		if (printPath)
-		{
-			for (i = 0; i <= tlv->depth; i++)
-			{
-				if (i == 0)
-					printf("%d", tagpath[i]);
-				else
-					printf(",%d", tagpath[i]);
-			}
-		} else
-		{
-			printf("%d", tlv->tag.id);
-		}
-
-		printf("|BEGIN\n");
-
-		for (i = 0; i < tlv->children.size(); i++)
-			printCSV(tlv->children[i], printPath);
-
-		if (printPath)
-		{
-			for (i = 0; i <= tlv->depth; i++)
-			{
-				if (i == 0)
-					printf("%d", tagpath[i]);
-				else
-					printf(",%d", tagpath[i]);
-			}
-		} else
-		{
-			printf("%d", tlv->tag.id);
-		}
-
-		printf("|END\n");
 	}
 }
 
 void dump(FILE *fp)
 {
 	struct TLV root;
+	struct TLV *real_root;
+
+	/*
+		moCallRecord (MOCallRecord): 16 / 1 / 0 / 1
+		mtCallRecord (MTCallRecord): 16 / 1 / 1 / 1
+
+		moSMSRecord (MOSMSRecord):   16 / 1 / 6 / 1
+		mtSMSRecord (MTSMSRecord):   16 / 1 / 7 / 1
+	*/
 
 	while (1)
 	{
@@ -362,14 +361,10 @@ void dump(FILE *fp)
 
 		switch (format)
 		{
-			case 0:
-				print(&root);
-				break;
-			case 1:
-				printCSV(&root, 0);
-				break;
-			case 2:
-				printCSV(&root, 1);
+			default:
+				real_root = tlv_by_id(&root, 16);
+				real_root = tlv_by_id(real_root, 1);
+				build_skip_ranges(real_root, fp);
 				break;
 		}
 	}
@@ -438,6 +433,7 @@ int main(int argc, char *argv[])
 			fprintf(stderr, "error opening %s: %s\n", argv[i], strerror(errno));
 			continue;
 		}
+		filename = argv[i];
 
 		dump(fp);
 
