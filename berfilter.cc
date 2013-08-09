@@ -20,6 +20,8 @@ static int tagpath[128];
 char *filename;
 char *prefix;
 
+int DEBUG = 0;
+
 enum
 {
 	CLASS_MASK	= 0xC0,
@@ -55,6 +57,22 @@ struct TLV
 	TLV *parent;
 	std::vector<struct TLV *> children;
 };
+
+struct range
+{
+	int start;
+	int end;
+};
+
+struct range *new_range(int start, int end)
+{
+	struct range *s = (struct range *)malloc(sizeof(struct range));
+	s->start = start;
+	s->end = end;
+	return s;
+}
+
+std::vector<struct range *> skip_ranges;
 
 int readTag(FILE *fp, struct tag *tag)
 {
@@ -268,21 +286,6 @@ TLV* tlv_by_id(TLV *tlv, int id)
 	return NULL;
 }
 
-struct range
-{
-	int start;
-	int end;
-};
-
-struct range *new_range(int start, int end)
-{
-	struct range *s = (struct range *)malloc(sizeof(struct range));
-	s->start = start;
-	s->end = end;
-	return s;
-}
-
-std::vector<struct range *> skip_ranges;
 
 bool int_in_list(int needle, int *haystack, int list_len)
 {
@@ -365,18 +368,22 @@ void build_skip_ranges(TLV *tlv, FILE *fp)
 		if (int_in_list(child->tag.id, p, 5))
 		{
 			printf("%s: Child %d contains the greppable field!\n", filename, child->tag.id);
-			field_of_interest = tlv_by_id(child, 1);
+			field_of_interest = tlv_by_id(child, 1); // 1 is the grep field
 			if (field_of_interest != NULL)
 			{
 				field_value = field_to_hex(field_of_interest, 8); // our field is 8 bytes
 				if (field_value == NULL)
 				{
-					fprintf(stderr, "\n*******************\n");
-					fprintf(stderr, "Failed to extract 8 bytes from field:");
-					dump_tlv_info(field_of_interest);
-					fprintf(stderr, "raw (unswapped nibble) hex data:");
-					error_print_value(field_of_interest);
-					fprintf(stderr, "\n*******************\n\n");
+					if (DEBUG)
+					{
+						fprintf(stderr, "\n*******************\n");
+						fprintf(stderr, "Failed to extract 8 bytes from field:");
+						dump_tlv_info(field_of_interest);
+						fprintf(stderr, "raw (unswapped nibble) hex data:");
+						error_print_value(field_of_interest);
+						fprintf(stderr, "\n*******************\n\n");
+					}
+					free(field_value);
 					continue;
 				}
 				if (!strncmp(field_value, prefix, min(strlen(field_value), strlen(prefix))))
@@ -388,7 +395,7 @@ void build_skip_ranges(TLV *tlv, FILE *fp)
 						));
 					tlv->length.length -= child->length.length;
 					tlv->nbytes -= child->nbytes;
-					printf("AND A MATCH: %s! (record size: %d)\n", field_value, child->nbytes);
+					if (DEBUG) printf("AND A MATCH: %s! (record size: %d)\n", field_value, child->nbytes);
 				}
 				free(field_value);
 			}
@@ -396,10 +403,16 @@ void build_skip_ranges(TLV *tlv, FILE *fp)
 		else
 		{
 			// drop this record!
-			
+			skip_ranges.push_back(
+				new_range(
+					child->file_offset_bytes,
+					child->file_offset_bytes+child->nbytes
+				));
+			tlv->length.length -= child->length.length;
+			tlv->nbytes -= child->nbytes;
 		}
 	}
-	printf("Done...\n");
+	fprintf(stderr, "Size after: %d\n", tlv->nbytes);
 	dump_tlv_info(tlv);
 }
 
@@ -407,14 +420,7 @@ void dump(FILE *fp)
 {
 	struct TLV root;
 	struct TLV *real_root;
-
-	/*
-		moCallRecord (MOCallRecord): 16 / 1 / 0 / 1
-		mtCallRecord (MTCallRecord): 16 / 1 / 1 / 1
-
-		moSMSRecord (MOSMSRecord):   16 / 1 / 6 / 1
-		mtSMSRecord (MTSMSRecord):   16 / 1 / 7 / 1
-	*/
+	unsigned int i = 0;
 
 	while (1)
 	{
@@ -432,6 +438,16 @@ void dump(FILE *fp)
 				real_root = tlv_by_id(&root, 16);
 				real_root = tlv_by_id(real_root, 1);
 				build_skip_ranges(real_root, fp);
+				// now the TLV tree in real_root should be updated with correct sizes,
+				// and the bytes we need to skip should be logged in skip_ranges
+				int sum = 0;
+				for (i = 0; i < skip_ranges.size(); i++)
+				{
+					struct range *it = skip_ranges[i];
+					printf("Range %d = %d - %d, size=%d\n", i, it->start, it->end, (it->end - it->start));
+					sum += (it->end - it->start);
+				}
+				printf("total bytes to skip: %d\n", sum);
 				break;
 		}
 	}
@@ -448,12 +464,15 @@ int main(int argc, char *argv[])
 {
 	int c;
 
-	while ((c = getopt(argc, argv, "p:h?")) != -1)
+	while ((c = getopt(argc, argv, "p:h?d?")) != -1)
 	{
 		switch (c)
 		{
 			case 'p':
 				prefix = optarg;
+				break;
+			case 'd':
+				DEBUG = 1;
 				break;
 			case 'h':
 			default:
