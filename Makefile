@@ -4,7 +4,7 @@ CFLAGS=-Wall -ggdb3
 
 all: berfilter
 
-OBJS += tlv.o berfilter.o
+OBJS += berfilter.o
 
 berfilter: $(OBJS)
 	$(CC) $(OBJS) -o berfilter
