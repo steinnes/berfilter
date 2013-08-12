@@ -269,20 +269,25 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 	return 0;
 }
 
-TLV* tlv_by_id(TLV *tlv, int id)
+TLV *tlv_child_by_id(TLV *tlv, int id)
 {
 	unsigned int i;
-	if (tlv->tag.id == id)
-	{
-		return tlv;
-	}
 	for (i = 0; i < tlv->children.size(); i++)
 	{
 		if (tlv->children[i]->tag.id == id)
 			return tlv->children[i];
 	}
-
 	return NULL;
+}
+
+
+TLV* tlv_by_id(TLV *tlv, int id)
+{
+	if (tlv->tag.id == id)
+	{
+		return tlv;
+	}
+	return tlv_child_by_id(tlv, id);
 }
 
 bool int_in_list(int needle, int *haystack, int list_len)
@@ -310,6 +315,7 @@ void dump_tlv_info(TLV *tlv)
 void error_print_value(TLV *tlv)
 {
 	unsigned int i;
+	fprintf(stderr, "printing %d bytes:\n", tlv->length.length);
 	for (i = 0; i < tlv->length.length-1; i++)
 	{
 		fprintf(stderr, "%02x", tlv->value[i]);
@@ -325,17 +331,14 @@ char *field_to_hex(TLV *tlv, int len)
 	unsigned short num;
 	if (tlv->value != NULL)
 	{
-		if (tlv->length.length == 8)
+		for (i = 0; i < len; i++)
 		{
-			for (i = 0; i < 8; i++)
-			{
-				// swap nibbles
-				num = (unsigned short)(tlv->value[i]);
-				sprintf(hex_seat, "%02x", ((num>>4)&0x0f) | ((num<<4)&0xf0));
-				strncat(hex_string, hex_seat, 2);
-			}
-			return strdup(hex_string);
+			// swap nibbles
+			num = (unsigned short)(tlv->value[i]);
+			sprintf(hex_seat, "%02x", ((num>>4)&0x0f) | ((num<<4)&0xf0));
+			strncat(hex_string, hex_seat, 2);
 		}
+		return strdup(hex_string);
 	}
 	return NULL;
 }
@@ -365,17 +368,17 @@ void build_skip_ranges(TLV *tlv)
 		child = tlv->children[i];
 		if (int_in_list(child->tag.id, p, 5))
 		{
-			printf("%s: Child %d contains the greppable field!\n", filename, child->tag.id);
-			field_of_interest = tlv_by_id(child, 1);
+			printf("%s: Child %d (%d) contains the greppable field!\n", filename, i, child->tag.id);
+			field_of_interest = tlv_child_by_id(child, 1);
 			if (field_of_interest != NULL)
 			{
-				field_value = field_to_hex(field_of_interest, 8); // our field is 8 bytes
+				field_value = field_to_hex(field_of_interest, field_of_interest->length.length); // our field is 8 bytes
 				if (field_value == NULL)
 				{
 					fprintf(stderr, "\n*******************\n");
-					fprintf(stderr, "Failed to extract 8 bytes from field:");
+					fprintf(stderr, "Failed to extract 8 bytes from field:\n");
 					dump_tlv_info(field_of_interest);
-					fprintf(stderr, "raw (unswapped nibble) hex data:");
+					fprintf(stderr, "raw (unswapped nibble) hex data:\n");
 					error_print_value(field_of_interest);
 					fprintf(stderr, "\n*******************\n\n");
 					continue;
@@ -396,8 +399,13 @@ void build_skip_ranges(TLV *tlv)
 		}
 		else
 		{
-			// drop this record!
-			
+			skip_ranges.push_back(
+				new_range(
+					child->file_offset_bytes,
+					child->file_offset_bytes+child->nbytes
+				));
+			tlv->length.length -= child->length.length;
+			tlv->nbytes -= child->nbytes;
 		}
 	}
 	printf("Done...\n");
