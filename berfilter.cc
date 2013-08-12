@@ -322,7 +322,7 @@ void error_print_value(TLV *tlv)
 	}
 }
 
-char *field_to_hex(TLV *tlv, int len)
+char *field_to_hex(TLV *tlv, unsigned int len)
 {
 	char hex_string[len*2];
 	memset(hex_string, 0, sizeof(char)*len*2);
@@ -348,7 +348,8 @@ int min(int a, int b)
 	return a < b ? a : b;
 }
 
-void build_skip_ranges(TLV *tlv)
+// build_skip_ranges returns total number of skipped bytes!
+unsigned int build_skip_ranges(TLV *tlv)
 {
 	unsigned int i;
 	int *p;
@@ -360,7 +361,7 @@ void build_skip_ranges(TLV *tlv)
 				 6,    // moSMSRecord
 				 7,    // mtSMSRecord
 				 100}; // forwardCallRecord
-	dump_tlv_info(tlv);
+	unsigned int skipped_bytes = 0;
 
 	for (i = 0; i < tlv->children.size(); i++)
 	{
@@ -368,7 +369,7 @@ void build_skip_ranges(TLV *tlv)
 		child = tlv->children[i];
 		if (int_in_list(child->tag.id, p, 5))
 		{
-			printf("%s: Child %d (%d) contains the greppable field!\n", filename, i, child->tag.id);
+			printf("%s: Child %d (%d) contains the filter field!\n", filename, i, child->tag.id);
 			field_of_interest = tlv_child_by_id(child, 1);
 			if (field_of_interest != NULL)
 			{
@@ -385,6 +386,8 @@ void build_skip_ranges(TLV *tlv)
 				}
 				if (!strncmp(field_value, prefix, min(strlen(field_value), strlen(prefix))))
 				{
+					// We have a match, skip this record
+					//printf("AND A MATCH: %s! (record size: %d)\n", field_value, child->nbytes);
 					skip_ranges.push_back(
 						new_range(
 							child->file_offset_bytes,
@@ -392,13 +395,16 @@ void build_skip_ranges(TLV *tlv)
 						));
 					tlv->length.length -= child->length.length;
 					tlv->nbytes -= child->nbytes;
-					printf("AND A MATCH: %s! (record size: %d)\n", field_value, child->nbytes);
+					skipped_bytes += child->nbytes;
 				}
+				else
+					printf("Keeping record %d (%d), size:%d\n", i, child->tag.id, child->nbytes);
 				free(field_value);
 			}
 		}
 		else
 		{
+			// Not one of our "filter" records, we skip it!
 			skip_ranges.push_back(
 				new_range(
 					child->file_offset_bytes,
@@ -406,10 +412,10 @@ void build_skip_ranges(TLV *tlv)
 				));
 			tlv->length.length -= child->length.length;
 			tlv->nbytes -= child->nbytes;
+			skipped_bytes += child->nbytes;
 		}
 	}
-	printf("Done...\n");
-	dump_tlv_info(tlv);
+	return skipped_bytes;
 }
 
 void dump(FILE *fp)
@@ -425,6 +431,10 @@ void dump(FILE *fp)
 		moSMSRecord (MOSMSRecord):   16 / 1 / 6 / 1
 		mtSMSRecord (MTSMSRecord):   16 / 1 / 7 / 1
 	*/
+	char out_file[256];
+	memset(&out_file, 0, 256);
+	snprintf(out_file, 255, "%s.filtered", filename);
+	FILE *out = fopen(out_file, "w+");
 
 	while (1)
 	{
@@ -443,17 +453,37 @@ void dump(FILE *fp)
 		if (real_root == NULL)
 			break;
 
-		build_skip_ranges(real_root);
+		int total_skipped = build_skip_ranges(real_root);
 		// now the TLV tree in real_root should be updated with correct sizes,
 		// and the bytes we need to skip should be logged in skip_ranges
-		int sum = 0;
+		int sum_skipped = 0;
+		int sum_written = 0;
+		int last_written_byte = 0;
 		for (i = 0; i < skip_ranges.size(); i++)
 		{
+			// bytes 0..last_written_byte have been written, unless they fell within ranges in skip_ranges[0..i-1]
 			struct range *it = skip_ranges[i];
-			printf("Range %d = %d - %d, size=%d\n", i, it->start, it->end, (it->end - it->start));
-			sum += (it->end - it->start);
+			int to_write = it->start - last_written_byte;
+			if (last_written_byte == it->start)
+			{
+				printf("Skipping bytes: %d..%d\n", it->start, it->end);
+				last_written_byte = it->end;
+				sum_skipped += (it->end - it->start);
+				continue;
+			}
+			printf("Writing bytes: %d..%d\n", last_written_byte, it->start);
+			int written = 0;
+			char write_buffer[1024];
+			fseek(fp, last_written_byte, SEEK_SET);
+			while (written < to_write)
+			{
+				int read_bytes = fread(&write_buffer, sizeof(char), to_write, fp);
+				written += fwrite(&write_buffer, sizeof(char), read_bytes, out);
+			}
+			sum_written += written;
+			last_written_byte = it->end; // here we skip over [start .. end]
 		}
-		printf("total bytes to skip: %d\n", sum);
+		printf("total bytes skipped/written: %d/%d\n", sum_skipped, sum_written);
 	}
 }
 
