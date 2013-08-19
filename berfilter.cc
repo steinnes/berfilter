@@ -42,6 +42,7 @@ struct length
 {
         unsigned int length;
         unsigned int nbytes;
+	int isExtended;
 };
 
 struct TLV
@@ -129,6 +130,7 @@ int readLen(FILE *fp, struct length *length)
 	if ((length->length & LEN_XTND) == LEN_XTND)
 	{
 		int numoct = length->length & LEN_MASK;
+		length->isExtended = 1;
 
 		length->length = 0;
 
@@ -267,6 +269,53 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 	}
 
 	return 0;
+}
+
+int writeTag(struct tag *tag, FILE *fp)
+{
+        int r = fwrite(tag->tag, 1, tag->nbytes, fp);
+        if (r != tag->nbytes)
+                return 1;
+        return 0;
+}
+
+int writeLen(struct length *len, FILE *fp)
+{
+        int i;
+        char initial_octet;
+
+        if (len->isExtended)
+        {
+                initial_octet = 0;
+                initial_octet = (LEN_MASK | len->nbytes);
+                fwrite(initial_octet, 1, 1, fp);
+        }
+        int relevant_mask = 0;
+        for (i = 0; i < len->nbytes; i++)
+        {
+                relevant_mask |= 0xFF;
+                relevant_mask <<= 8;
+        }
+        int r = fwrite(len->length & relevant_mask, 1, len->nbytes, fp);
+        if (r != len->nbytes)
+                return 1;
+        return 0;
+}
+
+int writeTLV(TLV *tlv, FILE *fp)
+{
+	int i;
+	writeTag(tlv->tag, fp);
+	writeLength(tlv->length, fp);
+	if (tlv->isPrimitive)
+	{
+		fwrite(tlv->value, 1, tlv->length.length, fp);
+	}
+	else
+	{
+		for (i = 0; i < tlv->children.size(); i++)
+			return writeTLV(tlv->children[i], fp);
+	}
 }
 
 TLV *tlv_child_by_id(TLV *tlv, int id)
