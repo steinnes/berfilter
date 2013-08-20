@@ -18,8 +18,6 @@ char *prefix;
 int DEBUG = 0;
 static unsigned int depth = 0;
 
-struct range;
-
 enum
 {
 	CLASS_MASK	= 0xC0,
@@ -50,29 +48,12 @@ struct TLV
         struct tag tag;
         struct length length;
         unsigned int nbytes;
-        long file_offset_bytes;
         unsigned int depth;
         unsigned char *value;
         TLV *parent;
         std::vector<struct TLV *> children;
 };
 
-
-std::vector<struct range *> skip_ranges;
-
-struct range
-{
-	int start;
-	int end;
-};
-
-struct range *new_range(int start, int end)
-{
-	struct range *s = (struct range *)malloc(sizeof(struct range));
-	s->start = start;
-	s->end = end;
-	return s;
-}
 
 int readTag(FILE *fp, struct tag *tag)
 {
@@ -94,13 +75,10 @@ int readTag(FILE *fp, struct tag *tag)
 	if (tag->id == TAG_MASK)
 	{
 		// Long tag, encoded as a sequence of 7-bit values
-
 		tag->id = 0;
-
 		do
 		{
 			b = fgetc(fp);
-
 			if (b == EOF)
 				return 1;
 
@@ -118,9 +96,7 @@ int readLen(FILE *fp, struct length *length)
 	int b, i;
 
 	memset(length, 0, sizeof(struct length));
-
 	b = fgetc(fp);
-
 	if (b == EOF)
 		return 1;
 
@@ -131,7 +107,6 @@ int readLen(FILE *fp, struct length *length)
 	{
 		int numoct = length->length & LEN_MASK;
 		length->isExtended = 1;
-
 		length->length = 0;
 
 		if (numoct == 0)
@@ -140,7 +115,6 @@ int readLen(FILE *fp, struct length *length)
 		for (i = 0; i < numoct; i++)
 		{
 			b = fgetc(fp);
-
 			if (b == EOF)
 				return 1;
 
@@ -156,13 +130,8 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 {
 	int n = 0;
 	int i;
-	long file_offset;
 
 	memset(tlv, 0, sizeof(struct TLV));
-	file_offset = ftell(fp);
-	if (file_offset == -1)
-		printf("ftell encountered error: %s\n", strerror(errno));
-	tlv->file_offset_bytes = file_offset;
 
 	if (readTag(fp, &tlv->tag))
 		return 1;
@@ -191,7 +160,6 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 	if (tlv->tag.isPrimitive)
 	{
 		// Primitive definite-length method
-
 		if (length == 0)
 			return 0;
 
@@ -204,23 +172,19 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 			return 1;
 
 		tlv->nbytes += length;
-
 		return 0;
 	}
 
 	if (length > 0)
 	{
 		// Constructed definite-length method
-
 		struct TLV *child;
 		i = 0;
 
 		while (i < length)
 		{
 			depth++;
-
 			child = (struct TLV *)malloc(sizeof(struct TLV));
-
 			if (child == NULL)
 				err(1, "malloc");
 
@@ -229,8 +193,8 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 				depth--;
 				return 1;
 			}
-
 			depth--;
+			child->parent = tlv;
 
 			i += child->nbytes;
 			tlv->nbytes += child->nbytes;
@@ -241,22 +205,18 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 	}
 
 	// Constructed indefinite-length method
-
 	struct TLV *child;
 
 	while (1)
 	{
 		depth++;
-
 		child = (struct TLV *)malloc(sizeof(struct TLV));
 
 		if (child == NULL)
 			err(1, "malloc");
 
 		n = readTLV(fp, child, limit-tlv->nbytes);
-
 		depth--;
-
 		tlv->nbytes += child->nbytes;
 
 		if (n == 1)
@@ -265,57 +225,70 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 		if (child->tag.tag == 0 && child->length.length == 0)
 			break;
 
+		child->parent = tlv;
 		tlv->children.push_back(child);
 	}
 
 	return 0;
 }
 
-int writeTag(struct tag *tag, FILE *fp)
+int writeTag(struct tag tag, FILE *fp)
 {
-        int r = fwrite(tag->tag, 1, tag->nbytes, fp);
-        if (r != tag->nbytes)
+        int r = fwrite((char *)&(tag.tag), sizeof(char), tag.nbytes, fp);
+
+        if (r != tag.nbytes)
                 return 1;
         return 0;
 }
 
-int writeLen(struct length *len, FILE *fp)
+int writeLen(struct length len, FILE *fp)
 {
-        int i;
+        unsigned int i;
         char initial_octet;
+	char octet;
 
-        if (len->isExtended)
+        if (len.isExtended)
         {
                 initial_octet = 0;
-                initial_octet = (LEN_MASK | len->nbytes);
-                fwrite(initial_octet, 1, 1, fp);
+                initial_octet = (LEN_MASK | len.nbytes);
+                fwrite(&initial_octet, 1, 1, fp);
         }
         int relevant_mask = 0;
-        for (i = 0; i < len->nbytes; i++)
+        for (i = 0; i < len.nbytes; i++)
         {
                 relevant_mask |= 0xFF;
                 relevant_mask <<= 8;
         }
-        int r = fwrite(len->length & relevant_mask, 1, len->nbytes, fp);
-        if (r != len->nbytes)
+	octet = len.length & relevant_mask;
+        unsigned int r = fwrite(&octet, 1, len.nbytes, fp);
+        if (r != len.nbytes)
                 return 1;
         return 0;
 }
 
 int writeTLV(TLV *tlv, FILE *fp)
 {
-	int i;
-	writeTag(tlv->tag, fp);
-	writeLength(tlv->length, fp);
-	if (tlv->isPrimitive)
+	unsigned int i;
+	if (writeTag(tlv->tag, fp))
 	{
-		fwrite(tlv->value, 1, tlv->length.length, fp);
+		printf("Couldn't write tag!\n");
+		return 1;
+	}
+	if (writeLen(tlv->length, fp))
+	{
+		printf("Couldn't write length!\n");
+		return 1;
+	}
+	if (tlv->tag.isPrimitive)
+	{
+		int written = fwrite(tlv->value, sizeof(char), tlv->nbytes, fp);
 	}
 	else
 	{
 		for (i = 0; i < tlv->children.size(); i++)
-			return writeTLV(tlv->children[i], fp);
+			writeTLV(tlv->children[i], fp);
 	}
+	return 0;
 }
 
 TLV *tlv_child_by_id(TLV *tlv, int id)
@@ -349,6 +322,20 @@ bool int_in_list(int needle, int *haystack, int list_len)
 		list_len--;
 	}
 	return false;
+}
+
+void tlv_update_size(TLV *tlv, int delta)
+{
+	tlv->nbytes += delta;
+	if (tlv->parent != NULL)
+		tlv_update_size(tlv->parent, delta);
+}
+
+void tlv_delete(TLV *tlv)
+{
+	unsigned int my_size = tlv->nbytes;
+	tlv_update_size(tlv->parent, -my_size);
+	//tlv->parent->length.length -= 1; // XXX: KANNSKI EKKI NAUÐSYNLEGT
 }
 
 void dump_tlv_info(TLV *tlv)
@@ -397,11 +384,14 @@ int min(int a, int b)
 	return a < b ? a : b;
 }
 
-// build_skip_ranges returns total number of skipped bytes!
-unsigned int build_skip_ranges(TLV *tlv)
+// filters out TLVs from the 2nd level, based on whether the record is one of
+// "filter_records" and the "field of interest" (1, or ServedIMSI) matches a
+// given pattern
+// returns number of records deleted
+unsigned int filter_tree(TLV *tlv)
 {
-	unsigned int i;
-	int *p;
+	unsigned int i = 0;
+	unsigned int n_deleted = 0;
 	TLV *child;
 	TLV *field_of_interest;
 	char *field_value;
@@ -410,20 +400,30 @@ unsigned int build_skip_ranges(TLV *tlv)
 				 6,    // moSMSRecord
 				 7,    // mtSMSRecord
 				 100}; // forwardCallRecord
-	unsigned int skipped_bytes = 0;
 
-	for (i = 0; i < tlv->children.size(); i++)
+	int total_records = 0;
+	int field_to_look_for = 1;
+
+	for (std::vector<struct TLV *>::iterator it(tlv->children.begin()); it != tlv->children.end(); it++)
 	{
-		p = (int *)filter_records;
-		child = tlv->children[i];
-		if (int_in_list(child->tag.id, p, 5))
+		total_records++;
+		child = *it;
+		if (int_in_list(child->tag.id, (int *)filter_records, 5))
 		{
 			printf("%s: Child %d (%d) contains the filter field!\n", filename, i, child->tag.id);
-			field_of_interest = tlv_child_by_id(child, 1);
-			if (field_of_interest != NULL)
+			if (child->tag.id == 7)
+				field_to_look_for = 2;
+			else
+				field_to_look_for = 1;
+
+			field_of_interest = tlv_child_by_id(child, field_to_look_for);
+			if (field_of_interest == NULL)
+				continue;
+
+			field_value = field_to_hex(field_of_interest, field_of_interest->length.length);
+			if (field_value == NULL)
 			{
-				field_value = field_to_hex(field_of_interest, field_of_interest->length.length); // our field is 8 bytes
-				if (field_value == NULL)
+				if (DEBUG)
 				{
 					fprintf(stderr, "\n*******************\n");
 					fprintf(stderr, "Failed to extract 8 bytes from field:\n");
@@ -431,47 +431,36 @@ unsigned int build_skip_ranges(TLV *tlv)
 					fprintf(stderr, "raw (unswapped nibble) hex data:\n");
 					error_print_value(field_of_interest);
 					fprintf(stderr, "\n*******************\n\n");
-					continue;
 				}
-				if (!strncmp(field_value, prefix, min(strlen(field_value), strlen(prefix))))
-				{
-					// We have a match, skip this record
-					//printf("AND A MATCH: %s! (record size: %d)\n", field_value, child->nbytes);
-					skip_ranges.push_back(
-						new_range(
-							child->file_offset_bytes,
-							child->file_offset_bytes+child->nbytes
-						));
-					tlv->length.length -= child->length.length;
-					tlv->nbytes -= child->nbytes;
-					skipped_bytes += child->nbytes;
-				}
-				else
-					printf("Keeping record %d (%d), size:%d\n", i, child->tag.id, child->nbytes);
-				free(field_value);
+				continue;
 			}
+			// actual comparison
+			if (!strncmp(field_value, prefix, min(strlen(field_value), strlen(prefix))))
+			{
+				// We have a match, skip this record
+				tlv_delete(child);
+				tlv->children.erase(it);
+				n_deleted++;
+			}
+			else
+				printf("Keeping record %d (%d), size:%d\n", i, child->tag.id, child->nbytes);
+			free(field_value);
 		}
-		else
+		else // Not one of our "filter" records, we skip it!
 		{
-			// Not one of our "filter" records, we skip it!
-			skip_ranges.push_back(
-				new_range(
-					child->file_offset_bytes,
-					child->file_offset_bytes+child->nbytes
-				));
-			tlv->length.length -= child->length.length;
-			tlv->nbytes -= child->nbytes;
-			skipped_bytes += child->nbytes;
+			tlv_delete(child);
+			tlv->children.erase(it);
+			n_deleted++;
 		}
 	}
-	return skipped_bytes;
+	printf("total records: %d\n", total_records);
+	return n_deleted;
 }
 
 void dump(FILE *fp)
 {
 	struct TLV root;
 	struct TLV *real_root;
-	unsigned int i = 0;
 
 	/*
 		moCallRecord (MOCallRecord): 16 / 1 / 0 / 1
@@ -484,6 +473,7 @@ void dump(FILE *fp)
 	memset(&out_file, 0, 256);
 	snprintf(out_file, 255, "%s.filtered", filename);
 	FILE *out = fopen(out_file, "w+");
+	int n_deleted = 0;
 
 	while (1)
 	{
@@ -502,43 +492,16 @@ void dump(FILE *fp)
 		if (real_root == NULL)
 			break;
 
-		int total_skipped = build_skip_ranges(real_root);
-		// now the TLV tree in real_root should be updated with correct sizes,
-		// and the bytes we need to skip should be logged in skip_ranges
-		int sum_skipped = 0;
-		int sum_written = 0;
-		int last_written_byte = 0;
-		for (i = 0; i < skip_ranges.size(); i++)
-		{
-			// bytes 0..last_written_byte have been written, unless they fell within ranges in skip_ranges[0..i-1]
-			struct range *it = skip_ranges[i];
-			int to_write = it->start - last_written_byte;
-			if (last_written_byte == it->start)
-			{
-				printf("Skipping bytes: %d..%d\n", it->start, it->end);
-				last_written_byte = it->end;
-				sum_skipped += (it->end - it->start);
-				continue;
-			}
-			printf("Writing bytes: %d..%d\n", last_written_byte, it->start);
-			int written = 0;
-			char write_buffer[1024];
-			fseek(fp, last_written_byte, SEEK_SET);
-			while (written < to_write)
-			{
-				int read_bytes = fread(&write_buffer, sizeof(char), to_write, fp);
-				written += fwrite(&write_buffer, sizeof(char), read_bytes, out);
-			}
-			sum_written += written;
-			last_written_byte = it->end; // here we skip over [start .. end]
-		}
-		printf("total bytes skipped/written: %d/%d\n", sum_skipped, sum_written);
+		n_deleted = filter_tree(real_root);
+		printf("I deleted %d records from %s\n", n_deleted, filename);
+		printf("Writing file: %s.filtered\n", filename);
+		writeTLV(real_root, out);
 	}
 }
 
 static void usage(void)
 {
-	fprintf(stderr, "usage: berdump -p <prefix> <file>\n");
+	fprintf(stderr, "usage: berfilter -p <prefix> <file>\n");
 	fprintf(stderr, "options:\n");
 	fprintf(stderr, "  -p <prefix> - prefix in hex to match the filter-field\n");
 }
@@ -547,18 +510,26 @@ int main(int argc, char *argv[])
 {
 	int c;
 
-	while ((c = getopt(argc, argv, "p:h?")) != -1)
+	while ((c = getopt(argc, argv, "p:h?:d?")) != -1)
 	{
 		switch (c)
 		{
 			case 'p':
 				prefix = optarg;
 				break;
+			case 'd':
+				DEBUG = 1;
+				break;
 			case 'h':
 			default:
 				usage();
 				return 0;
 		}
+	}
+	if (prefix == NULL)
+	{
+		usage();
+		return 0;
 	}
 
 	argc -= optind;
