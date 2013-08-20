@@ -32,7 +32,7 @@ struct tag
 	int cls;
 	int isPrimitive;
 	int id;
-	int tag;
+	char tag[8];
 	int nbytes;
 };
 
@@ -50,9 +50,28 @@ struct TLV
         unsigned int nbytes;
         unsigned int depth;
         unsigned char *value;
+	bool deleted;
         TLV *parent;
         std::vector<struct TLV *> children;
 };
+
+void hexdump(void *ptr, int buflen)
+{
+	unsigned char *buf = (unsigned char*)ptr;
+	int i, j;
+	for (i = 0; i < buflen; i += 16)
+	{
+		for (j=0; j<16; j++) 
+		{
+			if (i+j < buflen)
+				printf("%02x ", buf[i+j]);
+			else
+				printf("   ");
+		}
+		printf(" ");
+		printf("\n");
+	}
+}
 
 
 int readTag(FILE *fp, struct tag *tag)
@@ -66,7 +85,8 @@ int readTag(FILE *fp, struct tag *tag)
 
 	tag->nbytes = 1;
 
-	tag->tag = b;
+	memset(tag->tag, 0, 8);
+	tag->tag[0] = (char)b;
 	tag->cls = b & CLASS_MASK;
 	tag->isPrimitive = (b & TYPE_MASK) == 0;
 
@@ -82,12 +102,12 @@ int readTag(FILE *fp, struct tag *tag)
 			if (b == EOF)
 				return 1;
 
-			tag->nbytes++;
+			tag->tag[tag->nbytes] = (char)b;
 			tag->id = (tag->id << 7) | (b & LEN_MASK);
+			tag->nbytes++;
 
 		} while ((b & LEN_XTND) == LEN_XTND);
 	}
-
 	return 0;
 }
 
@@ -132,6 +152,7 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 	int i;
 
 	memset(tlv, 0, sizeof(struct TLV));
+	tlv->deleted = false;
 
 	if (readTag(fp, &tlv->tag))
 		return 1;
@@ -234,7 +255,11 @@ int readTLV(FILE *fp, struct TLV *tlv, unsigned int limit)
 
 int writeTag(struct tag tag, FILE *fp)
 {
-        int r = fwrite((char *)&(tag.tag), sizeof(char), tag.nbytes, fp);
+	// class, id, isPrimitive, data, length
+	printf("Writing tag: class=%d id=%d isPrimitive=%d length=%d\ndata=",
+		tag.cls, tag.id, tag.isPrimitive, tag.nbytes);
+	hexdump(tag.tag, tag.nbytes);
+        int r = fwrite(tag.tag, sizeof(char), tag.nbytes, fp);
 
         if (r != tag.nbytes)
                 return 1;
@@ -243,6 +268,8 @@ int writeTag(struct tag tag, FILE *fp)
 
 int writeLen(struct length len, FILE *fp)
 {
+	// length, nbytes, isExtended
+	printf("Writing length: length=%d nbytes=%d isExtended=%d\ndata=", len.length, len.nbytes, len.isExtended);
         unsigned int i;
         char initial_octet;
 	char octet;
@@ -251,16 +278,20 @@ int writeLen(struct length len, FILE *fp)
         {
                 initial_octet = 0;
                 initial_octet = (LEN_MASK | len.nbytes);
+		hexdump(&initial_octet, 1);
                 fwrite(&initial_octet, 1, 1, fp);
         }
         int relevant_mask = 0;
         for (i = 0; i < len.nbytes; i++)
         {
-                relevant_mask |= 0xFF;
                 relevant_mask <<= 8;
+                relevant_mask |= 0xFF;
         }
+	printf("relevant mask=%02p\n", relevant_mask);
 	octet = len.length & relevant_mask;
+	hexdump(&octet, 1);
         unsigned int r = fwrite(&octet, 1, len.nbytes, fp);
+	printf("\n");
         if (r != len.nbytes)
                 return 1;
         return 0;
@@ -269,6 +300,8 @@ int writeLen(struct length len, FILE *fp)
 int writeTLV(TLV *tlv, FILE *fp)
 {
 	unsigned int i;
+	if (tlv->deleted)
+		return 0;
 	if (writeTag(tlv->tag, fp))
 	{
 		printf("Couldn't write tag!\n");
@@ -281,7 +314,10 @@ int writeTLV(TLV *tlv, FILE *fp)
 	}
 	if (tlv->tag.isPrimitive)
 	{
-		int written = fwrite(tlv->value, sizeof(char), tlv->nbytes, fp);
+		printf("Writing value: length=%d\ndata=", tlv->length.length);
+		hexdump(tlv->value, tlv->length.length);
+		printf("---\n");
+		int written = fwrite(tlv->value, sizeof(char), tlv->length.length, fp);
 	}
 	else
 	{
@@ -327,6 +363,7 @@ bool int_in_list(int needle, int *haystack, int list_len)
 void tlv_update_size(TLV *tlv, int delta)
 {
 	tlv->nbytes += delta;
+	tlv->length.length += delta;
 	if (tlv->parent != NULL)
 		tlv_update_size(tlv->parent, delta);
 }
@@ -334,8 +371,9 @@ void tlv_update_size(TLV *tlv, int delta)
 void tlv_delete(TLV *tlv)
 {
 	unsigned int my_size = tlv->nbytes;
+	tlv->deleted = true;
 	tlv_update_size(tlv->parent, -my_size);
-	//tlv->parent->length.length -= 1; // XXX: KANNSKI EKKI NAUÐSYNLEGT
+	//tlv->parent->length.length = 1; // XXX: KANNSKI EKKI NAUÐSYNLEGT
 }
 
 void dump_tlv_info(TLV *tlv)
@@ -439,7 +477,6 @@ unsigned int filter_tree(TLV *tlv)
 			{
 				// We have a match, skip this record
 				tlv_delete(child);
-				tlv->children.erase(it);
 				n_deleted++;
 			}
 			else
@@ -449,7 +486,6 @@ unsigned int filter_tree(TLV *tlv)
 		else // Not one of our "filter" records, we skip it!
 		{
 			tlv_delete(child);
-			tlv->children.erase(it);
 			n_deleted++;
 		}
 	}
@@ -495,7 +531,7 @@ void dump(FILE *fp)
 		n_deleted = filter_tree(real_root);
 		printf("I deleted %d records from %s\n", n_deleted, filename);
 		printf("Writing file: %s.filtered\n", filename);
-		writeTLV(real_root, out);
+		writeTLV(&root, out);
 	}
 }
 
